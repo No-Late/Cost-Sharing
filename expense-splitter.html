@@ -306,7 +306,7 @@
 
 <header>
   <div class="logo">Split<span>Easy</span></div>
-  <div class="header-hint">Track shared expenses, settle fairly</div>
+  <div class="header-hint" id="sync-status">Connecting…</div>
 </header>
 
 <div class="app">
@@ -405,16 +405,47 @@
 
 </div>
 
-<script>
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
+import { getFirestore, collection, doc, onSnapshot, setDoc, updateDoc, deleteDoc, arrayUnion, arrayRemove } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+
+// ===== FIREBASE =====
+const firebaseConfig = {
+  apiKey: "AIzaSyAdcSUzF0RkieSlOMj3f7JDJTGYzV19CQ8",
+  authDomain: "cost-sharing-23d96.firebaseapp.com",
+  projectId: "cost-sharing-23d96",
+  storageBucket: "cost-sharing-23d96.firebasestorage.app",
+  messagingSenderId: "1059993916883",
+  appId: "1:1059993916883:web:057aa8d1b7175e2ad8cb26"
+};
+const app = initializeApp(firebaseConfig);
+const db = getFirestore(app);
+
 // ===== STATE =====
-let events = [];   // { id, name, members: [], expenses: [] }
+let events = [];
 let currentEventId = null;
 
 // ===== HELPERS =====
 function currentEvent() { return events.find(e => e.id === currentEventId); }
-function fmt(n) { return (n >= 0 ? '+' : '') + n.toFixed(2) + ' €'; }
 function fmtAbs(n) { return Math.abs(n).toFixed(2) + ' €'; }
 function uid() { return '_' + Math.random().toString(36).slice(2, 9); }
+
+// ===== FIRESTORE REAL-TIME LISTENER =====
+function startListening() {
+  onSnapshot(collection(db, 'events'), snapshot => {
+    document.getElementById('sync-status').textContent = '🟢 Live sync on';
+    events = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
+    events.sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
+    // Keep currentEventId valid
+    if (currentEventId && !events.find(e => e.id === currentEventId)) currentEventId = null;
+    enableTabs();
+    renderEventsList();
+    // Refresh active tab
+    const activeTab = document.querySelector('.step-btn.active')?.id?.replace('tab-','');
+    if (activeTab === 'expenses') renderExpensesTab();
+    if (activeTab === 'settle') renderSettleTab();
+  });
+}
 
 // ===== TEMP MEMBERS (during creation) =====
 let tempMembers = [];
@@ -448,7 +479,7 @@ function renderTempMembers() {
 }
 
 // ===== CREATE EVENT =====
-function createNewEvent() {
+async function createNewEvent() {
   const name = document.getElementById('event-name').value.trim();
   const nameErr = document.getElementById('event-name-err');
   if (!name) { nameErr.style.display='block'; return; }
@@ -457,14 +488,14 @@ function createNewEvent() {
     const err = document.getElementById('member-err');
     err.textContent = 'Add at least 2 participants.'; err.style.display='block'; return;
   }
-  const ev = { id: uid(), name, members: [...tempMembers], expenses: [] };
-  events.push(ev);
-  currentEventId = ev.id;
+  const id = uid();
+  const ev = { name, members: [...tempMembers], expenses: [], createdAt: Date.now() };
+  await setDoc(doc(db, 'events', id), ev);
+  currentEventId = id;
   // reset
   document.getElementById('event-name').value = '';
   tempMembers = [];
   renderTempMembers();
-  renderEventsList();
   enableTabs();
   showTab('expenses');
 }
@@ -583,7 +614,7 @@ function getCheckedMembers() {
   return [...splitSelection];
 }
 
-function addExpense() {
+async function addExpense() {
   const ev = currentEvent(); if (!ev) return;
   const desc = document.getElementById('exp-desc').value.trim();
   const amount = parseFloat(document.getElementById('exp-amount').value);
@@ -596,17 +627,19 @@ function addExpense() {
   if (!splitAmong.length) { err.textContent='Select at least one person to split among.'; err.style.display='block'; return; }
   err.style.display='none';
 
-  ev.expenses.push({ id: uid(), desc, amount, payer, splitAmong });
+  const expense = { id: uid(), desc, amount, payer, splitAmong };
+  await updateDoc(doc(db, 'events', currentEventId), { expenses: arrayUnion(expense) });
   document.getElementById('exp-desc').value='';
   document.getElementById('exp-amount').value='';
-  splitSelection = new Set(ev.members); // reset to all after saving
+  splitSelection = new Set(ev.members);
   renderExpensesTab();
 }
 
-function removeExpense(id) {
+async function removeExpense(id) {
   const ev = currentEvent(); if (!ev) return;
-  ev.expenses = ev.expenses.filter(e => e.id !== id);
-  renderExpensesTab();
+  const expense = ev.expenses.find(e => e.id === id);
+  if (!expense) return;
+  await updateDoc(doc(db, 'events', currentEventId), { expenses: arrayRemove(expense) });
 }
 
 function renderExpenseList() {
@@ -717,8 +750,17 @@ function renderSettleTab() {
   `).join('');
 }
 
+// ===== EXPOSE FUNCTIONS TO GLOBAL SCOPE (needed for inline onclick handlers with type=module) =====
+window.addMember = addMember;
+window.removeTempMember = removeTempMember;
+window.createNewEvent = createNewEvent;
+window.switchEvent = switchEvent;
+window.showTab = showTab;
+window.addExpense = addExpense;
+window.removeExpense = removeExpense;
+
 // ===== INIT =====
-renderEventsList();
+startListening();
 </script>
 </body>
 </html>
